@@ -1,39 +1,103 @@
-Bakong KHQR payments (real QR + automatic payment check)
+========================================================================
+ SUPERMARKET API - SETUP & TROUBLESHOOTING GUIDE (README.txt)
+========================================================================
 
-HOW IT WORKS
-  1. Customer picks "Khqr" -> POST /api/orders/{id}/payments {"method":"Khqr"}
-     The API builds a KHQR for the exact order amount (official NBC SDK) and returns "qrData".
-     The app turns qrData into a QR image. The customer scans it with ABA, ACLEDA, Wing, Bakong, ...
-  2. The app calls POST /api/payments/{paymentId}/check every ~3 seconds.
-     A background job also checks every few seconds, so the order is confirmed even if the app is closed.
-  3. When Bakong reports the payment, the payment becomes Paid and the order Confirmed.
-  Unpaid orders still expire after 30 minutes (stock goes back).
+------------------------------------------------------------------------
+1. FIXING DATABASE CONNECTION ERRORS (MySQL + Pomelo EF Core)
+------------------------------------------------------------------------
+If your application fails to connect to MySQL during startup or database 
+migrations, follow these checks:
 
-SETUP
-  1. Install the NBC package in the API project (Package Manager Console):
-       Install-Package Kh.Gov.Nbc.BakongKHQR
-  2. Copy into your project (same paths):
-       Options/BakongOptions.cs
-       Services/Payments/IPaymentVerifier.cs
-       Services/Payments/Bakong/BakongApiClient.cs
-       Services/Payments/Bakong/BakongKhqrProvider.cs
-       Services/Background/PaymentVerificationService.cs
-     Overwrite:
-       Services/PaymentService.cs, Services/Interfaces/IPaymentService.cs,
-       Controllers/PaymentController.cs, Program.cs
-     (Program.cs = the Phase 9 file + Bakong. It does not contain the Docker options yet.)
-  3. Open Services/Payments/Bakong/BakongKhqrProvider.cs. Put the cursor on BakongKHQR, press Ctrl+. and
-     pick the "using ..." suggestion. Repeat for IndividualInfo / MerchantInfo / KHQRCurrency if still red.
-     If "Amount = amount" says double -> decimal, delete "(double)" on the line above.
-  4. appsettings.json: add the "Bakong" section from appsettings.Bakong.template.json and fill in
-     AccountId, MerchantName, Currency (same currency as your product prices).
-  5. User Secrets: add "Bakong:Token" (see secrets.add.json). NEVER put the token in appsettings.json,
-     in Git, or in a chat.
-  6. Tests (optional): copy tests/Supermarket.API.Tests/PaymentVerificationTests.cs next to your other tests.
-  No database migration is needed for this step.
+A. Update `appsettings.json` Database Connection String
+   Ensure your MySQL server details (Host, Database, User, Password) are 
+   configured properly.
+   
+   Example `appsettings.json`:
+   {
+     "ConnectionStrings": {
+       "DefaultConnection": "Server=localhost;Port=3306;Database=supermarket_db;Uid=root;Pwd=YOUR_MYSQL_PASSWORD;"
+     }
+   }
 
-TRY IT
-  - Start with Bakong:Enabled = true. Place an order, choose Khqr, copy "qrData" and paste it into any
-    QR generator (or the app), scan and pay a small amount in the Bakong sandbox / real account.
-  - Watch the API log: "1 payment(s) confirmed by Bakong."
-  - Set Enabled = false in Development to go back to the fake sandbox (POST /api/payments/{id}/sandbox-confirm).
+B. Verify MySQL Service & Package Setup
+   1. Ensure MySQL Server is running locally or on your target host.
+   2. Verify that `Pomelo.EntityFrameworkCore.MySql` is installed in your
+      API project dependencies.
+
+C. Apply Migrations to MySQL
+   Open Visual Studio Package Manager Console (Tools > NuGet Package Manager):
+   
+   PM> Add-Migration InitialCreate
+   PM> Update-Database
+
+------------------------------------------------------------------------
+2. SECURE USER SECRETS SETUP (Prevent Git Secret Leaks)
+------------------------------------------------------------------------
+Never store secret tokens (JWT Key, Bakong Token, DB Passwords) in 
+appsettings.json when committing code.
+
+1. Right-click the backend project in Visual Studio Solution Explorer.
+2. Select "Manage User Secrets".
+3. Add your sensitive credentials to `secrets.json`:
+
+   {
+     "ConnectionStrings:DefaultConnection": "Server=localhost;Port=3306;Database=supermarket_db;Uid=root;Pwd=YOUR_PASSWORD;",
+     "Jwt:Key": "YOUR_STRONG_JWT_SECRET_KEY_HERE_MIN_32_CHARS",
+     "Bakong:Token": "YOUR_BAKONG_OPEN_API_JWT_TOKEN"
+   }
+
+------------------------------------------------------------------------
+3. BAKONG KHQR PAYMENT INTEGRATION SETUP
+------------------------------------------------------------------------
+A. Add Bakong Configuration to `appsettings.json`:
+
+   {
+     "Bakong": {
+       "Enabled": true,
+       "BaseUrl": "https://api-bakong.nbc.gov.kh",
+       "AccountId": "2040292@aba",
+       "MerchantName": "Bule Panda",
+       "MerchantCity": "PHNOM PENH",
+       "Currency": "USD",
+       "AccountType": "Individual",
+       "PollIntervalSeconds": 5
+     },
+     "Payment": {
+       "UnpaidOrderExpiryMinutes": 30
+     }
+   }
+
+B. Program.cs Registration:
+   Ensure `DbContext`, `BakongKhqrProvider`, and Payment background workers 
+   are registered in `Program.cs`:
+
+   builder.Services.AddDbContext<ApplicationDbContext>(options =>
+       options.UseMySql(
+           builder.Configuration.GetConnectionString("DefaultConnection"),
+           ServerVersion.AutoDetect(builder.Configuration.GetConnectionString("DefaultConnection"))
+       ));
+
+------------------------------------------------------------------------
+4. RUNNING & TESTING PAYMENT ENDPOINTS
+------------------------------------------------------------------------
+1. Start the API (F5 in Visual Studio).
+2. Authenticate via POST /api/auth/login or /api/auth/google to get JWT.
+3. Create an order and initiate payment:
+   POST /api/orders/{orderId}/payments
+   Body: { "method": "Khqr" }
+4. Response returns KHQR payload string / MD5 transaction hash.
+5. Once scanned and paid via Bakong/ABA app, the payment worker updates 
+   Order Status from `Pending` to `Confirmed`.
+
+------------------------------------------------------------------------
+5. COMMON ERRORS & SOLUTIONS
+------------------------------------------------------------------------
+- "Cannot connect to MySQL server":
+  Check MySQL service status and verify `DefaultConnection` credentials.
+
+- "Bakong is enabled, but Bakong:Token is missing":
+  Add `"Bakong:Token": "..."` to Visual Studio User Secrets (`secrets.json`).
+
+- "Table 'supermarket_db.Payments' doesn't exist":
+  Run `Add-Migration AddPayments` and `Update-Database` in Package Manager Console.
+========================================================================
